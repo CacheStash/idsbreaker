@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Copy, Trash2, Wand2, Check, Info, Sun, Moon, ListOrdered, AlertCircle, Hash } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Copy, Trash2, Wand2, Check, Info, Sun, Moon, ListOrdered, AlertCircle, Hash, Upload, Download, FileJson, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Stats {
@@ -13,6 +13,12 @@ interface Stats {
   lastId: number | null;
   duplicates: number[];
   skipped: number[];
+}
+
+interface SubtitleSequence {
+  id: number;
+  time: string;
+  text: string;
 }
 
 export default function App() {
@@ -24,6 +30,12 @@ export default function App() {
     if (saved) return saved === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
+
+  // Subtitle Sync States
+  const [srtFile, setSrtFile] = useState<File | null>(null);
+  const [srtSequences, setSrtSequences] = useState<SubtitleSequence[]>([]);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Persist theme
   useEffect(() => {
@@ -70,6 +82,32 @@ export default function App() {
     return { rawLines, idsCount, lastId, duplicates, skipped };
   }, [text]);
 
+  // Extract IDs and Texts from the current editor content
+  const editorData = useMemo(() => {
+    const lines = text.split('\n').filter(l => l.trim());
+    const data: Record<number, string> = {};
+    
+    lines.forEach(line => {
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (match) {
+        data[parseInt(match[1], 10)] = match[2].trim();
+      }
+    });
+    
+    return data;
+  }, [text]);
+
+  const isSyncMatch = useMemo(() => {
+    if (srtSequences.length === 0) return true;
+    const editorIds = Object.keys(editorData).map(Number);
+    const srtIds = srtSequences.map(s => s.id);
+    
+    if (editorIds.length !== srtIds.length) return false;
+    
+    // Check if all SRT IDs exist in editor data
+    return srtIds.every(id => editorData[id] !== undefined);
+  }, [editorData, srtSequences]);
+
   const formatText = useCallback((input: string) => {
     const regex = /\{(\d+)\}\s*(.*?)(?=(?:\s*\{\d+\})|$)/gs;
     const matches = [...input.matchAll(regex)];
@@ -104,6 +142,80 @@ export default function App() {
   const handleClear = () => {
     setText('');
     setIsAutoFormat(false);
+    setSrtFile(null);
+    setSrtSequences([]);
+  };
+
+  // Subtitle Parsing Logic
+  const parseSRT = (content: string): SubtitleSequence[] => {
+    const sequences: SubtitleSequence[] = [];
+    const blocks = content.trim().split(/\n\s*\n/);
+    
+    blocks.forEach(block => {
+      const lines = block.trim().split('\n');
+      if (lines.length >= 3) {
+        const id = parseInt(lines[0].trim(), 10);
+        const time = lines[1].trim();
+        const text = lines.slice(2).join('\n').trim();
+        
+        if (!isNaN(id)) {
+          sequences.push({ id, time, text });
+        }
+      }
+    });
+    
+    return sequences;
+  };
+
+  const handleFileUpload = (file: File) => {
+    if (!file.name.endsWith('.srt')) {
+      alert('Please upload a .srt file');
+      return;
+    }
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      const parsed = parseSRT(content);
+      setSrtSequences(parsed);
+      setSrtFile(file);
+    };
+    reader.readAsText(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleFileUpload(file);
+  };
+
+  const downloadSRT = () => {
+    if (!isSyncMatch || srtSequences.length === 0) return;
+    
+    const newContent = srtSequences.map(seq => {
+      const newText = editorData[seq.id] || seq.text;
+      return `${seq.id}\n${seq.time}\n${newText}\n`;
+    }).join('\n');
+    
+    const blob = new Blob([newContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = srtFile?.name || 'synced_subtitle.srt';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -111,7 +223,7 @@ export default function App() {
       <motion.div 
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className={`w-full max-w-3xl rounded-3xl shadow-2xl border overflow-hidden flex flex-col h-[85vh] transition-colors duration-300 ${
+        className={`w-full max-w-4xl rounded-3xl shadow-2xl border overflow-hidden flex flex-col h-[85vh] transition-colors duration-300 ${
           isDarkMode ? 'bg-[#141414] border-white/5' : 'bg-white border-black/5'
         }`}
       >
@@ -124,8 +236,8 @@ export default function App() {
               <Wand2 className="w-5 h-5" />
             </div>
             <div>
-              <h1 className="font-semibold text-lg tracking-tight">Text Splitter</h1>
-              <p className={`text-xs font-medium uppercase tracking-wider ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}>Offline Formatter</p>
+              <h1 className="font-semibold text-lg tracking-tight">Text Splitter & Sub Sync</h1>
+              <p className={`text-xs font-medium uppercase tracking-wider ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}>Offline Utility</p>
             </div>
           </div>
 
@@ -158,35 +270,112 @@ export default function App() {
           </div>
         </div>
 
-        {/* Editor Area */}
-        <div className={`flex-1 relative p-6 transition-colors duration-300 ${isDarkMode ? 'bg-[#141414]' : 'bg-white'}`}>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Paste your text here... e.g. {1} Hello {2} World"
-            className={`w-full h-full resize-none border-none focus:ring-0 text-lg leading-relaxed font-medium transition-colors duration-300 ${
-              isDarkMode ? 'bg-transparent text-white placeholder:text-white/10' : 'bg-transparent text-black placeholder:text-black/20'
-            }`}
-            spellCheck={false}
-          />
-          
-          <AnimatePresence>
-            {text.length === 0 && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-12 text-center"
-              >
-                <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${isDarkMode ? 'bg-white/5' : 'bg-black/5'}`}>
-                  <Info className={`w-8 h-8 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`} />
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+          {/* Editor Area */}
+          <div className={`flex-1 relative p-6 border-r transition-colors duration-300 ${isDarkMode ? 'bg-[#141414] border-white/5' : 'bg-white border-black/5'}`}>
+            <textarea
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Paste your text here... e.g. {1} Hello {2} World"
+              className={`w-full h-full resize-none border-none focus:ring-0 text-lg leading-relaxed font-medium transition-colors duration-300 ${
+                isDarkMode ? 'bg-transparent text-white placeholder:text-white/10' : 'bg-transparent text-black placeholder:text-black/20'
+              }`}
+              spellCheck={false}
+            />
+            
+            <AnimatePresence>
+              {text.length === 0 && (
+                <motion.div 
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-12 text-center"
+                >
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${isDarkMode ? 'bg-white/5' : 'bg-black/5'}`}>
+                    <Info className={`w-8 h-8 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`} />
+                  </div>
+                  <p className={`text-sm max-w-xs ${isDarkMode ? 'text-white/30' : 'text-black/40'}`}>
+                    Paste text with format <code className={`px-1 rounded ${isDarkMode ? 'bg-white/10' : 'bg-black/5'}`}>{"{number} [text]"}</code> and toggle the switch to split it.
+                  </p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Subtitle Sync Area */}
+          <div className={`w-full md:w-80 p-6 flex flex-col gap-4 transition-colors duration-300 ${isDarkMode ? 'bg-black/20' : 'bg-black/[0.02]'}`}>
+            <h2 className={`text-xs font-bold uppercase tracking-widest ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}>Subtitle Sync</h2>
+            
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              onClick={() => fileInputRef.current?.click()}
+              className={`flex-1 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-4 text-center cursor-pointer transition-all duration-200 ${
+                isDragging 
+                  ? 'border-emerald-500 bg-emerald-500/5' 
+                  : (isDarkMode ? 'border-white/10 hover:border-white/20' : 'border-black/10 hover:border-black/20')
+              }`}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                className="hidden" 
+                accept=".srt"
+              />
+              
+              {srtFile ? (
+                <div className="flex flex-col items-center gap-2">
+                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${isDarkMode ? 'bg-white/5' : 'bg-black/5'}`}>
+                    <FileJson className={`w-6 h-6 ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
+                  </div>
+                  <div className="max-w-full">
+                    <p className="text-sm font-semibold truncate px-2">{srtFile.name}</p>
+                    <p className="text-[10px] uppercase font-bold opacity-40">{srtSequences.length} Sequences</p>
+                  </div>
+                  <button 
+                    onClick={(e) => { e.stopPropagation(); setSrtFile(null); setSrtSequences([]); }}
+                    className="mt-2 p-1.5 rounded-lg hover:bg-red-500/10 text-red-500 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
-                <p className={`text-sm max-w-xs ${isDarkMode ? 'text-white/30' : 'text-black/40'}`}>
-                  Paste text with format <code className={`px-1 rounded ${isDarkMode ? 'bg-white/10' : 'bg-black/5'}`}>{"{number} [text]"}</code> and toggle the switch to split it.
-                </p>
-              </motion.div>
+              ) : (
+                <>
+                  <Upload className={`w-8 h-8 mb-2 ${isDarkMode ? 'text-white/10' : 'text-black/10'}`} />
+                  <p className={`text-sm font-medium ${isDarkMode ? 'text-white/40' : 'text-black/40'}`}>
+                    Drag & drop .srt file or click to browse
+                  </p>
+                </>
+              )}
+            </div>
+
+            {srtFile && (
+              <div className="flex flex-col gap-3">
+                {!isSyncMatch && (
+                  <div className="flex items-center gap-2 bg-red-500/10 p-3 rounded-xl border border-red-500/20">
+                    <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                    <p className="text-xs font-bold text-red-500">IDS NOT MATCH</p>
+                  </div>
+                )}
+                
+                <button
+                  onClick={downloadSRT}
+                  disabled={!isSyncMatch || srtSequences.length === 0}
+                  className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl font-bold transition-all duration-200 ${
+                    !isSyncMatch || srtSequences.length === 0
+                      ? (isDarkMode ? 'bg-white/5 text-white/10 cursor-not-allowed' : 'bg-black/5 text-black/20 cursor-not-allowed')
+                      : (isDarkMode ? 'bg-emerald-500 text-white hover:bg-emerald-600 active:scale-95' : 'bg-emerald-600 text-white hover:bg-emerald-700 active:scale-95')
+                  }`}
+                >
+                  <Download className="w-4 h-4" />
+                  <span>Sync & Download</span>
+                </button>
+              </div>
             )}
-          </AnimatePresence>
+          </div>
         </div>
 
         {/* Stats Bar */}
@@ -285,7 +474,7 @@ export default function App() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.5 }}
-        className="mt-8 max-w-3xl w-full px-6"
+        className="mt-8 max-w-4xl w-full px-6"
       >
         <h2 className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? 'text-white/20' : 'text-black/30'}`}>How it works</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
