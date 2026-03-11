@@ -1,0 +1,5 @@
+{
+  "name": "Text Format Splitter",
+  "description": "A simple tool to split and format text from {n} text format into a clean list.",
+  "requestFramePermissions": []
+}
