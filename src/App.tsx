@@ -13,6 +13,7 @@ interface Stats {
   lastId: number | null;
   duplicates: number[];
   skipped: number[];
+  possibleTypos: number[];
 }
 
 interface SubtitleSequence {
@@ -48,7 +49,7 @@ export default function App() {
   }, [isDarkMode]);
 
   const stats = useMemo((): Stats => {
-    if (!text.trim()) return { rawLines: 0, idsCount: 0, lastId: null, duplicates: [], skipped: [] };
+    if (!text.trim()) return { rawLines: 0, idsCount: 0, lastId: null, duplicates: [], skipped: [], possibleTypos: [] };
 
     const rawLines = text.split('\n').filter(l => l.trim()).length;
     
@@ -68,10 +69,29 @@ export default function App() {
       seen.add(id);
     });
 
+    // Deteksi potensi ID yang Typo (Outliers yang memicu lonjakan gap raksasa)
+    const possibleTypos: number[] = [];
+    if (ids.length > 2) {
+      const sortedIds = [...ids].sort((a, b) => a - b);
+      const q1 = sortedIds[Math.floor(sortedIds.length * 0.25)];
+      const q3 = sortedIds[Math.floor(sortedIds.length * 0.75)];
+      const iqr = q3 - q1;
+      const minFence = q1 - Math.max(iqr * 1.5, 100);
+      const maxFence = q3 + Math.max(iqr * 1.5, 100);
+      
+      ids.forEach(id => {
+        if (id < minFence || id > maxFence) {
+          if (!possibleTypos.includes(id)) possibleTypos.push(id);
+        }
+      });
+    }
+
     const skipped: number[] = [];
-    if (ids.length > 0) {
-      const min = Math.min(...ids);
-      const max = Math.max(...ids);
+    // Hitung skipped ID hanya dari deretan ID yang valid (tanpa pencilan/typo)
+    const validIds = ids.filter(id => !possibleTypos.includes(id));
+    if (validIds.length > 0) {
+      const min = Math.min(...validIds);
+      const max = Math.max(...validIds);
       for (let i = min; i <= max; i++) {
         if (!seen.has(i)) {
           skipped.push(i);
@@ -79,7 +99,7 @@ export default function App() {
       }
     }
 
-    return { rawLines, idsCount, lastId, duplicates, skipped };
+    return { rawLines, idsCount, lastId, duplicates, skipped, possibleTypos };
   }, [text]);
 
   // Extract IDs and Texts from the current editor content
@@ -416,11 +436,24 @@ export default function App() {
                 </div>
               )}
 
+              {/* TAMPILAN BARU: Info Kemungkinan Typo ID */}
+              {stats.possibleTypos.length > 0 && (
+                <div className="flex items-center gap-1.5 bg-red-500/10 px-2 py-0.5 rounded-md border border-red-500/20">
+                  <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                  <span className="text-[10px] font-bold text-red-500 uppercase">Kemungkinan Typo ID:</span>
+                  <span className="text-xs font-mono font-bold text-red-500">{stats.possibleTypos.join(', ')}</span>
+                </div>
+              )}
+
               {stats.skipped.length > 0 && (
                 <div className="flex items-center gap-1.5 bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
                   <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
                   <span className="text-[10px] font-bold text-amber-500 uppercase">Skipped:</span>
-                  <span className="text-xs font-mono font-bold text-amber-500">{stats.skipped.join(', ')}</span>
+                  <span className="text-xs font-mono font-bold text-amber-500">
+                    {stats.skipped.length > 15 
+                      ? `${stats.skipped.slice(0, 15).join(', ')}... (+${stats.skipped.length - 15} lagi)` 
+                      : stats.skipped.join(', ')}
+                  </span>
                 </div>
               )}
             </motion.div>
