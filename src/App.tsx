@@ -1,10 +1,11 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Copy, Trash2, Wand2, Check, Info, Sun, Moon, ListOrdered, AlertCircle, Hash, Upload, Download, FileJson, X } from 'lucide-react';
+import { Copy, Trash2, Wand2, Check, Info, Sun, Moon, ListOrdered, AlertCircle, Hash, Upload, Download, FileJson, X, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface Stats {
@@ -94,7 +95,9 @@ export default function App() {
       const max = Math.max(...validIds);
       for (let i = min; i <= max; i++) {
         if (!seen.has(i)) {
-          skipped.push(i);
+          if (validIds.includes(min) && validIds.includes(max)) {
+             skipped.push(i);
+          }
         }
       }
     }
@@ -138,6 +141,68 @@ export default function App() {
       .map(match => `${match[1]} ${match[2].trim()}`)
       .join('\n');
   }, []);
+
+  // Fitur Auto-Fix Typos ID dengan Analisis Baris Atas & Bawah
+  const handleFixTypos = useCallback(() => {
+    if (!text.trim()) return;
+
+    const lines = text.split('\n');
+    const parsedLines = lines.map(line => {
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (match) {
+        return {
+          original: line,
+          id: parseInt(match[1], 10),
+          content: match[2]
+        };
+      }
+      return { original: line, id: null, content: line };
+    });
+
+    let hasChanges = false;
+
+    // Evaluasi baris demi baris dengan membandingkan ID atas (i-1) dan bawah (i+1)
+    for (let i = 1; i < parsedLines.length - 1; i++) {
+      const current = parsedLines[i];
+      const prev = parsedLines[i - 1];
+      const next = parsedLines[i + 1];
+
+      // Jalankan perbaikan hanya jika baris saat ini, baris sebelum, dan baris sesudahnya memiliki susunan ID valid
+      if (current.id !== null && prev.id !== null && next.id !== null) {
+        
+        // Kasus Typo Kurang Angka: ID Saat Ini drop drastis dibanding baris atas, 
+        // namun baris bawah nilainya normal menanjak dari baris atas (Contoh: 690 -> 61 -> 692)
+        if (current.id < prev.id && next.id > prev.id) {
+          if (next.id - prev.id === 2) {
+            current.id = prev.id + 1;
+            hasChanges = true;
+          } else if (next.id - prev.id > 1 && next.id - prev.id <= 5) {
+            current.id = prev.id + 1;
+            hasChanges = true;
+          }
+        }
+        
+        // Kasus Typo Kelebihan Angka / Melonjak: ID Saat Ini loncat tinggi melompati batas normal,
+        // namun baris bawah kembali normal setelah baris atas (Contoh: 100 -> 9101 -> 102)
+        else if (current.id > next.id && next.id > prev.id) {
+          if (next.id - prev.id === 2) {
+            current.id = prev.id + 1;
+            hasChanges = true;
+          } else if (next.id - prev.id > 1 && next.id - prev.id <= 5) {
+            current.id = prev.id + 1;
+            hasChanges = true;
+          }
+        }
+      }
+    }
+
+    if (hasChanges) {
+      const fixedText = parsedLines
+        .map(line => line.id !== null ? `${line.id} ${line.content}` : line.original)
+        .join('\n');
+      setText(fixedText);
+    }
+  }, [text]);
 
   // Handle toggle logic
   useEffect(() => {
@@ -436,12 +501,22 @@ export default function App() {
                 </div>
               )}
 
-              {/* TAMPILAN BARU: Info Kemungkinan Typo ID */}
+              {/* TAMPILAN BARU: Info Kemungkinan Typo ID + Tombol Auto-Fix */}
               {stats.possibleTypos.length > 0 && (
-                <div className="flex items-center gap-1.5 bg-red-500/10 px-2 py-0.5 rounded-md border border-red-500/20">
-                  <AlertCircle className="w-3.5 h-3.5 text-red-500" />
-                  <span className="text-[10px] font-bold text-red-500 uppercase">Kemungkinan Typo ID:</span>
-                  <span className="text-xs font-mono font-bold text-red-500">{stats.possibleTypos.join(', ')}</span>
+                <div className="flex items-center gap-2 bg-red-500/10 pl-2 pr-1 py-0.5 rounded-md border border-red-500/20">
+                  <div className="flex items-center gap-1.5">
+                    <AlertCircle className="w-3.5 h-3.5 text-red-500" />
+                    <span className="text-[10px] font-bold text-red-500 uppercase">Kemungkinan Typo ID:</span>
+                    <span className="text-xs font-mono font-bold text-red-500">{stats.possibleTypos.join(', ')}</span>
+                  </div>
+                  <button
+                    onClick={handleFixTypos}
+                    className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-red-500 hover:bg-red-600 text-white rounded transition-colors"
+                    title="Perbaiki otomatis id yang typo berdasarkan baris sebelum dan sesudah"
+                  >
+                    <Sparkles className="w-2.5 h-2.5" />
+                    Fix Otomatis
+                  </button>
                 </div>
               )}
 
@@ -490,7 +565,7 @@ export default function App() {
                 <>
                   <Check className="w-4 h-4" />
                   <span>Copied!</span>
-                </>
+                </                <>
               ) : (
                 <>
                   <Copy className="w-4 h-4" />
@@ -528,3 +603,4 @@ export default function App() {
     </div>
   );
 }
+
