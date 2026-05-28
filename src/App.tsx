@@ -48,15 +48,27 @@ export default function App() {
     }
   }, [isDarkMode]);
 
+  // Ekstrak baris teks editor secara real-time untuk analisa statistik dan perbaikan
+  const parsedLinesData = useMemo(() => {
+    if (!text.trim()) return [];
+    return text.split('\n').map(line => {
+      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      if (match) {
+        return {
+          original: line,
+          id: parseInt(match[1], 10),
+          content: match[2]
+        };
+      }
+      return { original: line, id: null, content: line };
+    });
+  }, [text]);
+
   const stats = useMemo((): Stats => {
-    if (!text.trim()) return { rawLines: 0, idsCount: 0, lastId: null, duplicates: [], skipped: [], possibleTypos: [] };
+    if (parsedLinesData.length === 0) return { rawLines: 0, idsCount: 0, lastId: null, duplicates: [], skipped: [], possibleTypos: [] };
 
     const rawLines = text.split('\n').filter(l => l.trim()).length;
-    
-    // Match {n} anywhere OR n at the start of a line
-    const regex = /(?:\{(\d+)\})|(?:^\s*(\d+)(?=\s+))/gm;
-    const matches = [...text.matchAll(regex)];
-    const ids = matches.map(m => parseInt(m[1] || m[2], 10));
+    const ids = parsedLinesData.map(l => l.id).filter((id): id is number => id !== null);
     const idsCount = ids.length;
     const lastId = ids.length > 0 ? Math.max(...ids) : null;
 
@@ -69,55 +81,50 @@ export default function App() {
       seen.add(id);
     });
 
-    // Deteksi potensi ID yang Typo (Outliers yang memicu lonjakan gap raksasa)
+    // Deteksi typo menggunakan urutan baris atas-bawah langsung (bukan sekadar rumus IQR statistik global)
     const possibleTypos: number[] = [];
-    if (ids.length > 2) {
-      const sortedIds = [...ids].sort((a, b) => a - b);
-      const q1 = sortedIds[Math.floor(sortedIds.length * 0.25)];
-      const q3 = sortedIds[Math.floor(sortedIds.length * 0.75)];
-      const iqr = q3 - q1;
-      const minFence = q1 - Math.max(iqr * 1.5, 100);
-      const maxFence = q3 + Math.max(iqr * 1.5, 100);
-      
-      ids.forEach(id => {
-        if (id < minFence || id > maxFence) {
-          if (!possibleTypos.includes(id)) possibleTypos.push(id);
+    for (let i = 1; i < parsedLinesData.length - 1; i++) {
+      const current = parsedLinesData[i];
+      const prev = parsedLinesData[i - 1];
+      const next = parsedLinesData[i + 1];
+
+      if (current.id !== null && prev.id !== null && next.id !== null) {
+        // Kasus: 690 -> 61 -> 692 (ID saat ini terjun bebas tapi baris berikutnya kembali normal menanjak)
+        if (current.id < prev.id && next.id > prev.id) {
+          possibleTypos.push(current.id);
         }
-      });
+        // Kasus: 100 -> 9101 -> 102 (ID saat ini melonjak gila-gilaan tapi baris berikutnya normal kembali)
+        else if (current.id > next.id && next.id > prev.id) {
+          possibleTypos.push(current.id);
+        }
+      }
     }
 
     const skipped: number[] = [];
-    // Hitung skipped ID hanya dari deretan ID yang valid (tanpa pencilan/typo)
     const validIds = ids.filter(id => !possibleTypos.includes(id));
     if (validIds.length > 0) {
       const min = Math.min(...validIds);
       const max = Math.max(...validIds);
       for (let i = min; i <= max; i++) {
         if (!seen.has(i)) {
-          if (validIds.includes(min) && validIds.includes(max)) {
-             skipped.push(i);
-          }
+          skipped.push(i);
         }
       }
     }
 
     return { rawLines, idsCount, lastId, duplicates, skipped, possibleTypos };
-  }, [text]);
+  }, [text, parsedLinesData]);
 
   // Extract IDs and Texts from the current editor content
   const editorData = useMemo(() => {
-    const lines = text.split('\n').filter(l => l.trim());
     const data: Record<number, string> = {};
-    
-    lines.forEach(line => {
-      const match = line.match(/^\s*(\d+)\s+(.*)$/);
-      if (match) {
-        data[parseInt(match[1], 10)] = match[2].trim();
+    parsedLinesData.forEach(line => {
+      if (line.id !== null) {
+        data[line.id] = line.content.trim();
       }
     });
-    
     return data;
-  }, [text]);
+  }, [parsedLinesData]);
 
   const isSyncMatch = useMemo(() => {
     if (srtSequences.length === 0) return true;
@@ -125,8 +132,6 @@ export default function App() {
     const srtIds = srtSequences.map(s => s.id);
     
     if (editorIds.length !== srtIds.length) return false;
-    
-    // Check if all SRT IDs exist in editor data
     return srtIds.every(id => editorData[id] !== undefined);
   }, [editorData, srtSequences]);
 
@@ -141,67 +146,42 @@ export default function App() {
       .join('\n');
   }, []);
 
-  // Fitur Auto-Fix Typos ID dengan Analisis Baris Atas & Bawah
+  // Fitur Auto-Fix Typos ID: Memaksa perbaikan urutan baris yang rusak secara instan
   const handleFixTypos = useCallback(() => {
-    if (!text.trim()) return;
+    if (parsedLinesData.length === 0) return;
 
-    const lines = text.split('\n');
-    const parsedLines = lines.map(line => {
-      const match = line.match(/^\s*(\d+)\s+(.*)$/);
-      if (match) {
-        return {
-          original: line,
-          id: parseInt(match[1], 10),
-          content: match[2]
-        };
-      }
-      return { original: line, id: null, content: line };
-    });
-
+    // Duplikasi data agar tidak merusak state React secara langsung saat kalkulasi
+    const updatedLines = parsedLinesData.map(l => ({ ...l }));
     let hasChanges = false;
 
-    // Evaluasi baris demi baris dengan membandingkan ID atas (i-1) dan bawah (i+1)
-    for (let i = 1; i < parsedLines.length - 1; i++) {
-      const current = parsedLines[i];
-      const prev = parsedLines[i - 1];
-      const next = parsedLines[i + 1];
+    for (let i = 1; i < updatedLines.length - 1; i++) {
+      const current = updatedLines[i];
+      const prev = updatedLines[i - 1];
+      const next = updatedLines[i + 1];
 
-      // Jalankan perbaikan hanya jika baris saat ini, baris sebelum, dan baris sesudahnya memiliki susunan ID valid
       if (current.id !== null && prev.id !== null && next.id !== null) {
         
-        // Kasus Typo Kurang Angka: ID Saat Ini drop drastis dibanding baris atas, 
-        // namun baris bawah nilainya normal menanjak dari baris atas (Contoh: 690 -> 61 -> 692)
+        // Pola Kurang Angka (Contoh: 690 -> 61 -> 692)
         if (current.id < prev.id && next.id > prev.id) {
-          if (next.id - prev.id === 2) {
-            current.id = prev.id + 1;
-            hasChanges = true;
-          } else if (next.id - prev.id > 1 && next.id - prev.id <= 5) {
-            current.id = prev.id + 1;
-            hasChanges = true;
-          }
+          current.id = prev.id + 1;
+          hasChanges = true;
         }
         
-        // Kasus Typo Kelebihan Angka / Melonjak: ID Saat Ini loncat tinggi melompati batas normal,
-        // namun baris bawah kembali normal setelah baris atas (Contoh: 100 -> 9101 -> 102)
+        // Pola Kelebihan Angka / Loncat (Contoh: 100 -> 9101 -> 102)
         else if (current.id > next.id && next.id > prev.id) {
-          if (next.id - prev.id === 2) {
-            current.id = prev.id + 1;
-            hasChanges = true;
-          } else if (next.id - prev.id > 1 && next.id - prev.id <= 5) {
-            current.id = prev.id + 1;
-            hasChanges = true;
-          }
+          current.id = prev.id + 1;
+          hasChanges = true;
         }
       }
     }
 
     if (hasChanges) {
-      const fixedText = parsedLines
+      const fixedText = updatedLines
         .map(line => line.id !== null ? `${line.id} ${line.content}` : line.original)
         .join('\n');
       setText(fixedText);
     }
-  }, [text]);
+  }, [parsedLinesData]);
 
   // Handle toggle logic
   useEffect(() => {
