@@ -564,7 +564,7 @@ export default function App() {
                 <>
                   <Check className="w-4 h-4" />
                   <span>Copied!</span>
-                </                <>
+                </>
               ) : (
                 <>
                   <Copy className="w-4 h-4" />
