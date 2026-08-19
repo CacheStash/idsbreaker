@@ -213,16 +213,17 @@ export default function App() {
   // Subtitle Parsing Logic
   const parseSRT = (content: string): SubtitleSequence[] => {
     const sequences: SubtitleSequence[] = [];
-    const blocks = content.trim().split(/\n\s*\n/);
+    const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+    const blocks = normalized.split(/\n{2,}/);
     
     blocks.forEach(block => {
-      const lines = block.trim().split('\n');
-      if (lines.length >= 3) {
+      const lines = block.split('\n').map(l => l.trimEnd());
+      if (lines.length >= 2) {
         const id = parseInt(lines[0].trim(), 10);
         const time = lines[1].trim();
-        const text = lines.slice(2).join('\n').trim();
         
-        if (!isNaN(id)) {
+        if (!isNaN(id) && time.includes('-->')) {
+          const text = lines.length > 2 ? lines.slice(2).join('\n').trim() : '';
           sequences.push({ id, time, text });
         }
       }
