@@ -143,6 +143,15 @@ export default function App() {
     return srtIds.every(id => editorData[id] !== undefined);
   }, [editorData, srtSequences]);
 
+  // Membersihkan tag sitasi seperti [cite: 2], [cite: 0], [cite], dll beserta spasi berlebih
+  const cleanCitations = useCallback((str: string): string => {
+    return str
+      .replace(/\[\s*cite(?::\s*[^\]]*)?\s*\]/gi, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/[ \t]+([,.:;!?])/g, '$1')
+      .trim();
+  }, []);
+
   const formatText = useCallback((input: string) => {
     if (!input || !input.trim()) return input;
     const trimmed = input.trim();
@@ -166,7 +175,8 @@ export default function App() {
               : (val && typeof val === 'object' && (val.text || val.translation || val.content))
                 ? (val.text || val.translation || val.content)
                 : JSON.stringify(val));
-            return `${parseInt(k, 10)} ${String(textContent).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()}`;
+            const cleanText = cleanCitations(String(textContent).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' '));
+            return `${parseInt(k, 10)} ${cleanText}`;
           }).join('\n');
         }
       } else if (Array.isArray(parsed) && parsed.length > 0) {
@@ -179,7 +189,7 @@ export default function App() {
               const val = item.text ?? item.translation ?? item.content ?? (typeof item[idKey] === 'string' ? item[idKey] : '');
               items.push({
                 id: numId,
-                text: String(val).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()
+                text: cleanCitations(String(val).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' '))
               });
             }
           }
@@ -209,9 +219,8 @@ export default function App() {
           .replace(/\\t/g, ' ')
           .replace(/\\\\/g, '\\')
           .replace(/\r?\n/g, ' ')
-          .replace(/[ \t]+/g, ' ')
-          .trim();
-        return { id, text: unescaped };
+          .replace(/[ \t]+/g, ' ');
+        return { id, text: cleanCitations(unescaped) };
       });
       items.sort((a, b) => a.id - b.id);
       return items.map(i => `${i.id} ${i.text}`).join('\n');
@@ -222,12 +231,16 @@ export default function App() {
     const bracketMatches = [...trimmed.matchAll(bracketRegex)];
     if (bracketMatches.length > 0) {
       return bracketMatches
-        .map(m => `${m[1]} ${m[2].replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()}`)
+        .map(m => `${m[1]} ${cleanCitations(m[2].replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' '))}`)
         .join('\n');
     }
 
-    return input;
-  }, []);
+    // 4. Fallback jika sudah berupa teks biasa / baris: tetap bersihkan tag sitasi [cite]
+    return input
+      .split('\n')
+      .map(line => cleanCitations(line))
+      .join('\n');
+  }, [cleanCitations]);
 
   // Fitur Auto-Fix Typos ID: Memaksa perbaikan urutan baris yang rusak secara instan
   const handleFixTypos = useCallback(() => {
