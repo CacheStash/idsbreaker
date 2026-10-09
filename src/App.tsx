@@ -24,7 +24,10 @@ interface SubtitleSequence {
 
 export default function App() {
   const [text, setText] = useState('');
-  const [isAutoFormat, setIsAutoFormat] = useState(false);
+  const [isAutoFormat, setIsAutoFormat] = useState(() => {
+    const saved = localStorage.getItem('auto_format');
+    return saved !== null ? saved === 'true' : true;
+  });
   const [copied, setCopied] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(() => {
     const saved = localStorage.getItem('theme');
@@ -37,6 +40,11 @@ export default function App() {
   const [srtSequences, setSrtSequences] = useState<SubtitleSequence[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Persist auto format preference
+  useEffect(() => {
+    localStorage.setItem('auto_format', String(isAutoFormat));
+  }, [isAutoFormat]);
 
   // Persist theme
   useEffect(() => {
@@ -136,14 +144,89 @@ export default function App() {
   }, [editorData, srtSequences]);
 
   const formatText = useCallback((input: string) => {
-    const regex = /\{(\d+)\}\s*(.*?)(?=(?:\s*\{\d+\})|$)/gs;
-    const matches = [...input.matchAll(regex)];
-    
-    if (matches.length === 0) return input;
+    if (!input || !input.trim()) return input;
+    const trimmed = input.trim();
 
-    return matches
-      .map(match => `${match[1]} ${match[2].trim()}`)
-      .join('\n');
+    // 1. Coba deteksi dan parse format JSON (Object atau Array)
+    let cleanJson = trimmed;
+    if (cleanJson.startsWith('```')) {
+      cleanJson = cleanJson.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    }
+
+    try {
+      const parsed = JSON.parse(cleanJson);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const keys = Object.keys(parsed).filter(k => /^\d+$/.test(k.trim()));
+        if (keys.length > 0) {
+          keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+          return keys.map(k => {
+            const val = parsed[k];
+            const textContent = (typeof val === 'string'
+              ? val
+              : (val && typeof val === 'object' && (val.text || val.translation || val.content))
+                ? (val.text || val.translation || val.content)
+                : JSON.stringify(val));
+            return `${parseInt(k, 10)} ${String(textContent).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()}`;
+          }).join('\n');
+        }
+      } else if (Array.isArray(parsed) && parsed.length > 0) {
+        const items: { id: number; text: string }[] = [];
+        for (const item of parsed) {
+          if (item && typeof item === 'object') {
+            const idKey = item.id ?? item.sequence ?? Object.keys(item).find(k => /^\d+$/.test(k));
+            if (idKey !== undefined && !isNaN(parseInt(idKey, 10))) {
+              const numId = parseInt(idKey, 10);
+              const val = item.text ?? item.translation ?? item.content ?? (typeof item[idKey] === 'string' ? item[idKey] : '');
+              items.push({
+                id: numId,
+                text: String(val).replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()
+              });
+            }
+          }
+        }
+        if (items.length > 0) {
+          items.sort((a, b) => a.id - b.id);
+          return items.map(i => `${i.id} ${i.text}`).join('\n');
+        }
+      }
+    } catch {
+      // Bukan valid standard JSON, lanjut ke regex parser di bawah
+    }
+
+    // 2. Regex untuk JSON-like key-value pairs (unquoted keys, single quotes, trailing comma, atau potongan JSON)
+    // Contoh: {"1":"Teks terjemahan...", "2":"Teks terjemahan..."} atau '1': 'Teks...' atau 1: "Teks..."
+    const kvRegex = /(?:["']?(\d+)["']?\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|`((?:\\.|[^`\\])*)`))/g;
+    const kvMatches = [...trimmed.matchAll(kvRegex)];
+    if (kvMatches.length > 0) {
+      const items = kvMatches.map(m => {
+        const id = parseInt(m[1], 10);
+        const rawText = m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : (m[4] || ''));
+        const unescaped = rawText
+          .replace(/\\"/g, '"')
+          .replace(/\\'/g, "'")
+          .replace(/\\n/g, ' ')
+          .replace(/\\r/g, '')
+          .replace(/\\t/g, ' ')
+          .replace(/\\\\/g, '\\')
+          .replace(/\r?\n/g, ' ')
+          .replace(/[ \t]+/g, ' ')
+          .trim();
+        return { id, text: unescaped };
+      });
+      items.sort((a, b) => a.id - b.id);
+      return items.map(i => `${i.id} ${i.text}`).join('\n');
+    }
+
+    // 3. Bracket format: {1} text atau { 1 } text
+    const bracketRegex = /\{\s*(\d+)\s*\}\s*(.*?)(?=(?:\s*\{\s*\d+\s*\})|$)/gs;
+    const bracketMatches = [...trimmed.matchAll(bracketRegex)];
+    if (bracketMatches.length > 0) {
+      return bracketMatches
+        .map(m => `${m[1]} ${m[2].replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim()}`)
+        .join('\n');
+    }
+
+    return input;
   }, []);
 
   // Fitur Auto-Fix Typos ID: Memaksa perbaikan urutan baris yang rusak secara instan
@@ -205,9 +288,27 @@ export default function App() {
 
   const handleClear = () => {
     setText('');
-    setIsAutoFormat(false);
     setSrtFile(null);
     setSrtSequences([]);
+  };
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (isAutoFormat) {
+      const pasted = e.clipboardData.getData('text');
+      const formatted = formatText(pasted);
+      if (formatted !== pasted) {
+        e.preventDefault();
+        if (!text.trim()) {
+          setText(formatted);
+        } else {
+          const target = e.currentTarget;
+          const start = target.selectionStart;
+          const end = target.selectionEnd;
+          const nextVal = text.substring(0, start) + formatted + text.substring(end);
+          setText(nextVal);
+        }
+      }
+    }
   };
 
   // Subtitle Parsing Logic
@@ -342,7 +443,8 @@ export default function App() {
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder="Paste your text here... e.g. {1} Hello {2} World"
+              onPaste={handlePaste}
+              placeholder='Paste your text here... e.g. {"1":"Hello","2":"World"} or {1} Hello {2} World'
               className={`w-full h-full resize-none border-none focus:ring-0 text-lg leading-relaxed font-medium transition-colors duration-300 ${
                 isDarkMode ? 'bg-transparent text-white placeholder:text-white/10' : 'bg-transparent text-black placeholder:text-black/20'
               }`}
@@ -361,7 +463,7 @@ export default function App() {
                     <Info className={`w-8 h-8 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`} />
                   </div>
                   <p className={`text-sm max-w-xs ${isDarkMode ? 'text-white/30' : 'text-black/40'}`}>
-                    Paste text with format <code className={`px-1 rounded ${isDarkMode ? 'bg-white/10' : 'bg-black/5'}`}>{"{number} [text]"}</code> and toggle the switch to split it.
+                    Paste JSON <code className={`px-1 rounded ${isDarkMode ? 'bg-white/10' : 'bg-black/5'}`}>{'{"1":"text"}'}</code> or bracket tags <code className={`px-1 rounded ${isDarkMode ? 'bg-white/10' : 'bg-black/5'}`}>{"{1} text"}</code> to auto split.
                   </p>
                 </motion.div>
               )}
@@ -481,21 +583,21 @@ export default function App() {
                 </div>
               )}
 
-              {/* TAMPILAN BARU: Info Kemungkinan Typo ID + Tombol Auto-Fix */}
+              {/* Possible Typo ID Info + Auto-Fix Button */}
               {stats.possibleTypos.length > 0 && (
                 <div className="flex items-center gap-2 bg-red-500/10 pl-2 pr-1 py-0.5 rounded-md border border-red-500/20">
                   <div className="flex items-center gap-1.5">
                     <AlertCircle className="w-3.5 h-3.5 text-red-500" />
-                    <span className="text-[10px] font-bold text-red-500 uppercase">Kemungkinan Typo ID:</span>
+                    <span className="text-[10px] font-bold text-red-500 uppercase">Possible ID Typo:</span>
                     <span className="text-xs font-mono font-bold text-red-500">{stats.possibleTypos.join(', ')}</span>
                   </div>
                   <button
                     onClick={handleFixTypos}
                     className="flex items-center gap-1 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-red-500 hover:bg-red-600 text-white rounded transition-colors"
-                    title="Perbaiki otomatis id yang typo berdasarkan baris sebelum dan sesudah"
+                    title="Automatically fix typo IDs based on adjacent lines"
                   >
                     <Sparkles className="w-2.5 h-2.5" />
-                    Fix Otomatis
+                    Auto Fix
                   </button>
                 </div>
               )}
@@ -506,7 +608,7 @@ export default function App() {
                   <span className="text-[10px] font-bold text-amber-500 uppercase">Skipped:</span>
                   <span className="text-xs font-mono font-bold text-amber-500">
                     {stats.skipped.length > 15 
-                      ? `${stats.skipped.slice(0, 15).join(', ')}... (+${stats.skipped.length - 15} lagi)` 
+                      ? `${stats.skipped.slice(0, 15).join(', ')}... (+${stats.skipped.length - 15} more)` 
                       : stats.skipped.join(', ')}
                   </span>
                 </div>
@@ -567,14 +669,25 @@ export default function App() {
         <h2 className={`text-xs font-bold uppercase tracking-widest mb-4 ${isDarkMode ? 'text-white/20' : 'text-black/30'}`}>How it works</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div className={`p-4 rounded-2xl border transition-colors duration-300 ${isDarkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white/50 border-black/5'}`}>
-            <p className={`text-[10px] font-bold uppercase mb-2 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`}>Input Format</p>
-            <p className={`text-sm font-mono leading-relaxed ${isDarkMode ? 'text-white/40' : 'text-black/60'}`}>
-              {"{1} Sedikit lagi, di ujung jalan itu belok kanan... {2} Di Osaka peraturannya bener-er ketat ya."}
-            </p>
+            <p className={`text-[10px] font-bold uppercase mb-2 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`}>Supported Input Formats</p>
+            <div className="space-y-3">
+              <div>
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white/30' : 'text-black/40'}`}>JSON Format:</span>
+                <p className={`text-xs font-mono leading-relaxed mt-0.5 ${isDarkMode ? 'text-white/50' : 'text-black/70'}`}>
+                  {'{"1":"Sedikit lagi...", "2":"Di Osaka..."}'}
+                </p>
+              </div>
+              <div>
+                <span className={`text-[10px] font-semibold uppercase tracking-wider ${isDarkMode ? 'text-white/30' : 'text-black/40'}`}>Bracket Tag Format:</span>
+                <p className={`text-xs font-mono leading-relaxed mt-0.5 ${isDarkMode ? 'text-white/50' : 'text-black/70'}`}>
+                  {"{1} Sedikit lagi... {2} Di Osaka..."}
+                </p>
+              </div>
+            </div>
           </div>
           <div className={`p-4 rounded-2xl border transition-colors duration-300 ${isDarkMode ? 'bg-white/[0.02] border-white/5' : 'bg-white/50 border-black/5'}`}>
             <p className={`text-[10px] font-bold uppercase mb-2 ${isDarkMode ? 'text-white/10' : 'text-black/20'}`}>Output Result</p>
-            <p className={`text-sm font-mono leading-relaxed whitespace-pre-line ${isDarkMode ? 'text-white/40' : 'text-black/60'}`}>
+            <p className={`text-xs font-mono leading-relaxed whitespace-pre-line ${isDarkMode ? 'text-white/50' : 'text-black/70'}`}>
               {"1 Sedikit lagi, di ujung jalan itu belok kanan...\n2 Di Osaka peraturannya bener-er ketat ya."}
             </p>
           </div>
