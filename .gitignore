@@ -32,3 +32,4 @@ dist-ssr
 backups
 release
 .pnpm
+pnpm-workspace.yaml
