@@ -33,3 +33,9 @@ backups
 release
 .pnpm
 pnpm-workspace.yaml
+sentclaude
+GEMINI.md
+gemini.md
+scratch
+.agents
+.system_generated

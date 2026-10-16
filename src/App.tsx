@@ -148,7 +148,7 @@ export default function App() {
     return str
       .replace(/\[\s*cite(?::\s*[^\]]*)?\s*\]/gi, '')
       .replace(/[ \t]{2,}/g, ' ')
-      .replace(/[ \t]+([,.:;!?])/g, '$1')
+      .replace(/(?<!\d)[ \t]+([,.:;!?])/g, '$1')
       .trim();
   }, []);
 
@@ -235,10 +235,22 @@ export default function App() {
         .join('\n');
     }
 
-    // 4. Fallback jika sudah berupa teks biasa / baris: tetap bersihkan tag sitasi [cite]
+    // 4. Fallback jika sudah berupa teks biasa / baris: format nomor berkarakter titik dan bersihkan tag sitasi [cite]
     return input
       .split('\n')
-      .map(line => cleanCitations(line))
+      .map(line => {
+        // Jika baris diawali nomor yang langsung nempel dengan karakter titik (contoh: 61...pasti -> 61 ...pasti)
+        const formattedLine = line.replace(/^(\s*\d+)(\..*)$/, '$1 $2');
+
+        const idMatch = formattedLine.match(/^(\s*\d+)\s+(.*)$/);
+        if (idMatch) {
+          const id = idMatch[1].trim();
+          const content = cleanCitations(idMatch[2]);
+          return content ? `${id} ${content}` : id;
+        }
+
+        return cleanCitations(formattedLine);
+      })
       .join('\n');
   }, [cleanCitations]);
 
