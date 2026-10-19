@@ -60,12 +60,12 @@ export default function App() {
   const parsedLinesData = useMemo(() => {
     if (!text.trim()) return [];
     return text.split('\n').map(line => {
-      const match = line.match(/^\s*(\d+)\s+(.*)$/);
+      const match = line.match(/^(\s*\d+)(?:\s+(.*)|(\..*))?$/);
       if (match) {
         return {
           original: line,
           id: parseInt(match[1], 10),
-          content: match[2]
+          content: (match[2] ?? match[3] ?? '').trim()
         };
       }
       return { original: line, id: null, content: line };
@@ -242,10 +242,10 @@ export default function App() {
         // Jika baris diawali nomor yang langsung nempel dengan karakter titik (contoh: 61...pasti -> 61 ...pasti)
         const formattedLine = line.replace(/^(\s*\d+)(\..*)$/, '$1 $2');
 
-        const idMatch = formattedLine.match(/^(\s*\d+)\s+(.*)$/);
+        const idMatch = formattedLine.match(/^(\s*\d+)(?:\s+(.*))?$/);
         if (idMatch) {
           const id = idMatch[1].trim();
-          const content = cleanCitations(idMatch[2]);
+          const content = idMatch[2] ? cleanCitations(idMatch[2]) : '';
           return content ? `${id} ${content}` : id;
         }
 
@@ -285,7 +285,7 @@ export default function App() {
 
     if (hasChanges) {
       const fixedText = updatedLines
-        .map(line => line.id !== null ? `${line.id} ${line.content}` : line.original)
+        .map(line => line.id !== null ? (line.content ? `${line.id} ${line.content}` : `${line.id}`) : line.original)
         .join('\n');
       setText(fixedText);
     }
@@ -394,7 +394,7 @@ export default function App() {
     if (!isSyncMatch || srtSequences.length === 0) return;
     
     const newContent = srtSequences.map(seq => {
-      const newText = editorData[seq.id] || seq.text;
+      const newText = editorData[seq.id] !== undefined ? editorData[seq.id] : (seq.text || '');
       return `${seq.id}\n${seq.time}\n${newText}\n`;
     }).join('\n');
     
